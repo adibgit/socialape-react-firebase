@@ -39,7 +39,6 @@ app.get('/screams', (req, res) => {
         .then((data) => {
             let screams = [];
             data.forEach((doc) => {
-                // screams.push(doc.data());
                 screams.push({
                     screamId: doc.id,
                     body: doc.data().body,
@@ -52,11 +51,49 @@ app.get('/screams', (req, res) => {
         .catch((err) => console.error(err))
 })
 
+const FBAuth = (req, res, next) => {
+    let idToken;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+        idToken = req.headers.authorization.split('Bearer ')[1];
+    } else {
+        console.error('No token found');
+        return res.status(403).json({
+            error: 'Unauthorized'
+        });
+    }
+
+    admin
+        .auth()
+        .verifyIdToken(idToken)
+        .then((decodedToken) => {
+            req.user = decodedToken;
+
+            console.log(decodedToken);
+
+            return db
+                .collection('users')
+                .where('userId', '==', req.user.uid)
+                .limit(1)
+                .get();
+        })
+        .then((data) => {
+            req.user.handle = data.docs[0].data().handle;
+            return next();
+        })
+        .catch((err) => {
+            console.error('Error while verifying token');
+
+            return res.status(403).json({
+                body: 'Body must not be empty'
+            });
+        })
+}
+
 // POST - create scream
-app.post('/scream', (req, res) => {
+app.post('/scream', FBAuth, (req, res) => {
     const newScream = {
         body: req.body.body,
-        userHandle: req.body.userHandle,
+        userHandle: req.user.handle,
         createdAt: new Date().toISOString()
     };
 
@@ -65,7 +102,7 @@ app.post('/scream', (req, res) => {
         .add(newScream)
         .then((doc) => {
             res.json({
-                message: 'document ${doc.id} successfully created'
+                message: `document ${doc.id} successfully created`
             });
         })
         .catch((err) => {
@@ -88,19 +125,19 @@ app.post('/signup', (req, res) => {
     let errors = {};
 
     if (isEmpty(newUser.email)) {
-        errors.email = 'Must not be empty'
+        errors.email = 'Must not be empty';
     } else if (!isEmail(newUser.email)) {
-        errors.email = 'Email must be a valid email address'
+        errors.email = 'Email must be a valid email address';
     }
 
-    if (isEmpty(newUser.password)) errors.password = 'Must not be empty'
-    if (newUser.confirmPassword !== newUser.confirmPassword) errors.confirmPassword = 'Password not matched'
-    if (isEmpty(newUser.handle)) errors.handle = 'Must not be empty'
-    if (Object.keys(errors).length > 0) return res.status(400).json(errors)
+    if (isEmpty(newUser.password)) errors.password = 'Must not be empty';
+    if (newUser.confirmPassword !== newUser.password) errors.confirmPassword = 'Password not matched';
+    if (isEmpty(newUser.handle)) errors.handle = 'Must not be empty';
+    if (Object.keys(errors).length > 0) return res.status(400).json(errors);
 
     let token, userId;
     db
-        .doc('/users/${newUser.handle}')
+        .doc(`/users/${newUser.handle}`)
         .get()
         .then((doc) => {
             if (doc.exists) {
@@ -125,7 +162,7 @@ app.post('/signup', (req, res) => {
             };
 
             return db
-                .doc('/users/${newUser.handle}')
+                .doc(`/users/${newUser.handle}`)
                 .set(userCredentials);
         })
         .then(() => {
@@ -144,6 +181,45 @@ app.post('/signup', (req, res) => {
                 return res.status(500).json({ error: err.code });
             }
         });
+})
+
+
+// POST - sign in
+app.post('/login', (req, res) => {
+    const user = {
+        email: req.body.email,
+        password: req.body.password
+    };
+
+    let errors = {};
+    
+    if (isEmpty(user.email)) errors.email = 'Must not be empty';
+    if (isEmpty(user.password)) errors.password = 'Must not be empty';
+    if (Object.keys(errors).length > 0) return res.status(400).json(errors);
+
+    auth    
+        .signInWithEmailAndPassword(user.email, user.password)
+        .then((data) => {
+            return data.user.getIdToken(); 
+        })
+        .then((token) => {
+            return res.json({
+                token
+            });
+        })
+        .catch((err) => {
+            console.error(err);
+
+            if (err.code === 'auth/wrong-password') {
+                return res.status(403).json({
+                    general: 'Wrong credentials, please try again'
+                });
+            } else {
+                return res.status(500).json({
+                    error: err.code
+                });
+            }
+        })
 })
 
 // ROUTE
